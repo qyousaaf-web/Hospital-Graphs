@@ -1,0 +1,3 @@
+import plotly.express as px
+fig = px.line(data, title="Sales Trend")
+st.plotly_chart(fig, use_container_width=True)
