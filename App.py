@@ -9,6 +9,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 import io
+from datetime import datetime
 
 # ================= CONFIG =================
 st.set_page_config(page_title="Hospital Management System", page_icon="🏥", layout="wide")
@@ -56,6 +57,7 @@ def init_db():
             status TEXT
         );
     """)
+    # Default departments
     c.execute("INSERT OR IGNORE INTO Departments(name) VALUES ('Cardiology'),('Neurology'),('Orthopedics')")
     conn.commit()
     conn.close()
@@ -85,11 +87,11 @@ if "refresh_needed" in st.session_state and st.session_state["refresh_needed"]:
     st.session_state["refresh_needed"] = False
     st.experimental_rerun()
 
-def export_pdf(df, filename="report.pdf"):
+def export_pdf(df, title="Report", filename="report.pdf"):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
     styles = getSampleStyleSheet()
-    elements = [Paragraph("Hospital Report", styles["Title"])]
+    elements = [Paragraph(title, styles["Title"])]
     data = [df.columns.tolist()] + df.values.tolist()
     table = Table(data)
     table.setStyle([
@@ -231,10 +233,6 @@ elif menu == "Doctors":
                     st.success("❌ Doctor deleted")
                     safe_rerun()
 
-# ================= FUTURE MODULES =================
-# You can extend similarly for Appointments, Billings, and Reports
-# Using patient_cnic/doctor_cnic, PDF export via export_pdf(), and Seaborn plots
-# This structure ensures no AttributeError and all forms work properly
-
+# ================= Footer =================
 st.markdown("---")
-st.markdown("<center>Built with ❤️ using Streamlit • Hospital DB: hospital.db</center>", unsafe_allow_html=True)
+st.markdown("<center>Built with ❤️ using Streamlit • Database: hospital.db</center>", unsafe_allow_html=True)
