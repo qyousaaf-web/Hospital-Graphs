@@ -1,0 +1,240 @@
+# app.py - Enhanced Hospital Management System
+import streamlit as st
+import sqlite3
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import re
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Table
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
+import io
+
+# ================= CONFIG =================
+st.set_page_config(page_title="Hospital Management System", page_icon="🏥", layout="wide")
+sns.set_theme(style="whitegrid")
+
+# ================= DATABASE =================
+DB = "hospital.db"
+
+def init_db():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.executescript("""
+        CREATE TABLE IF NOT EXISTS Users(
+            username TEXT PRIMARY KEY,
+            password TEXT,
+            role TEXT
+        );
+        CREATE TABLE IF NOT EXISTS Departments(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE
+        );
+        CREATE TABLE IF NOT EXISTS Patients(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            cnic TEXT UNIQUE,
+            phone TEXT
+        );
+        CREATE TABLE IF NOT EXISTS Doctors(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            cnic TEXT UNIQUE,
+            department TEXT
+        );
+        CREATE TABLE IF NOT EXISTS Appointments(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            patient TEXT,
+            doctor TEXT,
+            date TEXT,
+            time TEXT,
+            status TEXT
+        );
+        CREATE TABLE IF NOT EXISTS Billings(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            patient TEXT,
+            amount REAL,
+            details TEXT,
+            status TEXT
+        );
+    """)
+    # Insert default admin
+    c.execute("INSERT OR IGNORE INTO Users VALUES ('admin','admin123','Admin')")
+    # Sample departments
+    c.execute("INSERT OR IGNORE INTO Departments(name) VALUES ('Cardiology'),('Neurology'),('Orthopedics')")
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# ================= HELPERS =================
+def query(sql, params=()):
+    conn = sqlite3.connect(DB)
+    df = pd.read_sql(sql, conn, params=params)
+    conn.close()
+    return df
+
+def execute(sql, params=()):
+    conn = sqlite3.connect(DB)
+    conn.execute(sql, params)
+    conn.commit()
+    conn.close()
+
+def valid_cnic(cnic):
+    return re.match(r"^\d{5}-\d{7}-\d$", cnic)
+
+def color_button(label, color="primary"):
+    colors_map = {"primary":"#1E88E5","success":"#43A047","warning":"#FFB300","danger":"#E53935"}
+    return st.button(label, help=label, use_container_width=True, key=label,
+                     args=(), kwargs={}, 
+                     disabled=False, 
+                     type="primary", 
+                     css={"background-color": colors_map.get(color,"#1E88E5"),"color":"white","border-radius":"10px","height":"3em"})
+
+# ================= LOGIN =================
+if "login" not in st.session_state:
+    st.session_state.login = False
+
+if not st.session_state.login:
+    st.title("🔐 Login")
+    u = st.text_input("Username")
+    p = st.text_input("Password", type="password")
+    if st.button("Login"):
+        user = query("SELECT * FROM Users WHERE username=? AND password=?", (u, p))
+        if not user.empty:
+            st.session_state.login = True
+            st.experimental_rerun()
+        else:
+            st.error("Invalid credentials")
+    st.stop()
+
+# ================= SIDEBAR =================
+menu = st.sidebar.selectbox(
+    "Navigation",
+    ["Dashboard", "Patients", "Doctors", "Appointments", "Billings", "Reports"]
+)
+
+# ================= DASHBOARD =================
+if menu == "Dashboard":
+    st.title("🏥 Hospital Management Dashboard")
+    total_patients = len(query("SELECT * FROM Patients"))
+    total_doctors = len(query("SELECT * FROM Doctors"))
+    total_appointments = len(query("SELECT * FROM Appointments"))
+    total_revenue = query("SELECT SUM(amount) as revenue FROM Billings")["revenue"].iloc[0] or 0
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("👥 Patients", total_patients)
+    col2.metric("👨‍⚕️ Doctors", total_doctors)
+    col3.metric("🗓️ Appointments", total_appointments)
+    col4.metric("💰 Revenue", f"${total_revenue:.2f}")
+
+    # Charts
+    appt = query("SELECT * FROM Appointments")
+    if not appt.empty:
+        appt["date"] = pd.to_datetime(appt["date"])
+        monthly = appt.groupby(appt["date"].dt.to_period("M")).size().reset_index(name="Appointments")
+        monthly["date"] = monthly["date"].dt.to_timestamp()
+        fig, ax = plt.subplots()
+        sns.lineplot(data=monthly, x="date", y="Appointments", marker="o", ax=ax)
+        ax.set_title("📈 Monthly Appointment Trend")
+        st.pyplot(fig)
+
+        fig2, ax2 = plt.subplots()
+        sns.countplot(data=appt, y="doctor", palette="viridis", ax=ax2)
+        ax2.set_title("👨‍⚕️ Doctor-wise Appointments")
+        st.pyplot(fig2)
+
+    bill = query("SELECT * FROM Billings")
+    if not bill.empty:
+        fig3, ax3 = plt.subplots()
+        bill_sum = bill.groupby("patient")["amount"].sum().reset_index()
+        ax3.pie(bill_sum["amount"], labels=bill_sum["patient"], autopct='%1.1f%%', colors=sns.color_palette("pastel"))
+        ax3.set_title("💰 Revenue Distribution by Patient")
+        st.pyplot(fig3)
+
+# ================= PATIENTS =================
+elif menu == "Patients":
+    st.header("👥 Patients Management")
+    search = st.text_input("Search by CNIC or Name")
+    df_pat = query("SELECT * FROM Patients WHERE cnic LIKE ? OR name LIKE ?" if search else "SELECT * FROM Patients",
+                   (f"%{search}%", f"%{search}%") if search else ())
+    st.dataframe(df_pat)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("➕ Add Patient")
+        pname = st.text_input("Name")
+        pcnic = st.text_input("CNIC (xxxxx-xxxxxxx-x)")
+        pphone = st.text_input("Phone")
+        if st.button("Add Patient", key="add_patient"):
+            if not valid_cnic(pcnic):
+                st.error("Invalid CNIC")
+            else:
+                execute("INSERT INTO Patients VALUES(NULL,?,?,?)", (pname, pcnic, pphone))
+                st.success("✅ Patient added")
+                st.experimental_rerun()
+
+    with col2:
+        st.subheader("✏️ Update/Delete Patient")
+        pid = st.number_input("Patient ID", min_value=1)
+        pat_row = query("SELECT * FROM Patients WHERE id=?", (pid,))
+        if not pat_row.empty:
+            pname = st.text_input("Name", pat_row["name"].iloc[0], key="update_name")
+            pcnic = st.text_input("CNIC", pat_row["cnic"].iloc[0], key="update_cnic")
+            pphone = st.text_input("Phone", pat_row["phone"].iloc[0], key="update_phone")
+            ucol, dcol = st.columns(2)
+            with ucol:
+                if st.button("Update Patient", key="update_patient"):
+                    if valid_cnic(pcnic):
+                        execute("UPDATE Patients SET name=?, cnic=?, phone=? WHERE id=?", (pname, pcnic, pphone, pid))
+                        st.success("✅ Patient updated")
+                        st.experimental_rerun()
+            with dcol:
+                if st.button("Delete Patient", key="delete_patient"):
+                    execute("DELETE FROM Patients WHERE id=?", (pid,))
+                    st.success("❌ Patient deleted")
+                    st.experimental_rerun()
+
+# ================= DOCTORS =================
+elif menu == "Doctors":
+    st.header("👨‍⚕️ Doctors Management")
+    search = st.text_input("Search by CNIC or Name", key="doc_search")
+    df_doc = query("SELECT * FROM Doctors WHERE cnic LIKE ? OR name LIKE ?" if search else "SELECT * FROM Doctors",
+                   (f"%{search}%", f"%{search}%") if search else ())
+    st.dataframe(df_doc)
+
+    col1, col2 = st.columns(2)
+    departments = query("SELECT name FROM Departments")["name"].tolist()
+    with col1:
+        st.subheader("➕ Add Doctor")
+        dname = st.text_input("Name", key="doc_name")
+        dcnic = st.text_input("CNIC", key="doc_cnic")
+        ddept = st.selectbox("Department", departments, key="doc_dept")
+        if st.button("Add Doctor", key="add_doc"):
+            if valid_cnic(dcnic):
+                execute("INSERT INTO Doctors VALUES(NULL,?,?,?)", (dname, dcnic, ddept))
+                st.success("✅ Doctor added")
+                st.experimental_rerun()
+            else:
+                st.error("Invalid CNIC")
+
+    with col2:
+        st.subheader("✏️ Update/Delete Doctor")
+        did = st.number_input("Doctor ID", min_value=1, key="doc_id")
+        doc_row = query("SELECT * FROM Doctors WHERE id=?", (did,))
+        if not doc_row.empty:
+            dname = st.text_input("Name", doc_row["name"].iloc[0], key="upd_doc_name")
+            dcnic = st.text_input("CNIC", doc_row["cnic"].iloc[0], key="upd_doc_cnic")
+            ddept = st.selectbox("Department", departments, index=departments.index(doc_row["department"].iloc[0]), key="upd_doc_dept")
+            ucol, dcol = st.columns(2)
+            with ucol:
+                if st.button("Update Doctor", key="upd_doc_btn"):
+                    if valid_cnic(dcnic):
+                        execute("UPDATE Doctors SET name=?, cnic=?, department=? WHERE id=?", (dname, dcnic, ddept, did))
+                        st.success("✅ Doctor updated")
+                        st.experimental_rerun()
+            with dcol:
+                if st.button("Delete Doctor", key="del_doc_btn"):
+                    execute("DELETE FROM Doctors WHERE id=?", (did,))
+                    st.success("❌ Doctor deleted")
+                    st.experimental_rerun()
