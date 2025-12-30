@@ -1,4 +1,3 @@
-# app.py - Enhanced Hospital Management System
 import streamlit as st
 import sqlite3
 import pandas as pd
@@ -22,20 +21,15 @@ def init_db():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     c.executescript("""
-        CREATE TABLE IF NOT EXISTS Users(
-            username TEXT PRIMARY KEY,
-            password TEXT,
-            role TEXT
-        );
-        CREATE TABLE IF NOT EXISTS Departments(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE
-        );
         CREATE TABLE IF NOT EXISTS Patients(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT,
             cnic TEXT UNIQUE,
             phone TEXT
+        );
+        CREATE TABLE IF NOT EXISTS Departments(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE
         );
         CREATE TABLE IF NOT EXISTS Doctors(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,9 +53,6 @@ def init_db():
             status TEXT
         );
     """)
-    # Insert default admin
-    c.execute("INSERT OR IGNORE INTO Users VALUES ('admin','admin123','Admin')")
-    # Sample departments
     c.execute("INSERT OR IGNORE INTO Departments(name) VALUES ('Cardiology'),('Neurology'),('Orthopedics')")
     conn.commit()
     conn.close()
@@ -84,30 +75,12 @@ def execute(sql, params=()):
 def valid_cnic(cnic):
     return re.match(r"^\d{5}-\d{7}-\d$", cnic)
 
-def color_button(label, color="primary"):
-    colors_map = {"primary":"#1E88E5","success":"#43A047","warning":"#FFB300","danger":"#E53935"}
-    return st.button(label, help=label, use_container_width=True, key=label,
-                     args=(), kwargs={}, 
-                     disabled=False, 
-                     type="primary", 
-                     css={"background-color": colors_map.get(color,"#1E88E5"),"color":"white","border-radius":"10px","height":"3em"})
+def rerun_app():
+    st.session_state["refresh"] = True
 
-# ================= LOGIN =================
-if "login" not in st.session_state:
-    st.session_state.login = False
-
-if not st.session_state.login:
-    st.title("🔐 Login")
-    u = st.text_input("Username")
-    p = st.text_input("Password", type="password")
-    if st.button("Login"):
-        user = query("SELECT * FROM Users WHERE username=? AND password=?", (u, p))
-        if not user.empty:
-            st.session_state.login = True
-            st.experimental_rerun()
-        else:
-            st.error("Invalid credentials")
-    st.stop()
+if "refresh" in st.session_state and st.session_state["refresh"]:
+    st.session_state["refresh"] = False
+    st.experimental_rerun()
 
 # ================= SIDEBAR =================
 menu = st.sidebar.selectbox(
@@ -172,7 +145,7 @@ elif menu == "Patients":
             else:
                 execute("INSERT INTO Patients VALUES(NULL,?,?,?)", (pname, pcnic, pphone))
                 st.success("✅ Patient added")
-                st.experimental_rerun()
+                rerun_app()
 
     with col2:
         st.subheader("✏️ Update/Delete Patient")
@@ -188,12 +161,12 @@ elif menu == "Patients":
                     if valid_cnic(pcnic):
                         execute("UPDATE Patients SET name=?, cnic=?, phone=? WHERE id=?", (pname, pcnic, pphone, pid))
                         st.success("✅ Patient updated")
-                        st.experimental_rerun()
+                        rerun_app()
             with dcol:
                 if st.button("Delete Patient", key="delete_patient"):
                     execute("DELETE FROM Patients WHERE id=?", (pid,))
                     st.success("❌ Patient deleted")
-                    st.experimental_rerun()
+                    rerun_app()
 
 # ================= DOCTORS =================
 elif menu == "Doctors":
@@ -214,7 +187,7 @@ elif menu == "Doctors":
             if valid_cnic(dcnic):
                 execute("INSERT INTO Doctors VALUES(NULL,?,?,?)", (dname, dcnic, ddept))
                 st.success("✅ Doctor added")
-                st.experimental_rerun()
+                rerun_app()
             else:
                 st.error("Invalid CNIC")
 
@@ -232,9 +205,78 @@ elif menu == "Doctors":
                     if valid_cnic(dcnic):
                         execute("UPDATE Doctors SET name=?, cnic=?, department=? WHERE id=?", (dname, dcnic, ddept, did))
                         st.success("✅ Doctor updated")
-                        st.experimental_rerun()
+                        rerun_app()
             with dcol:
                 if st.button("Delete Doctor", key="del_doc_btn"):
                     execute("DELETE FROM Doctors WHERE id=?", (did,))
                     st.success("❌ Doctor deleted")
-                    st.experimental_rerun()
+                    rerun_app()
+
+# ================= APPOINTMENTS =================
+elif menu == "Appointments":
+    st.header("🗓️ Appointments Management")
+    search = st.text_input("Search by Patient, Doctor, or Status", key="appt_search")
+    df_appt = query("SELECT * FROM Appointments WHERE patient LIKE ? OR doctor LIKE ? OR status LIKE ?" if search else "SELECT * FROM Appointments",
+                    (f"%{search}%", f"%{search}%", f"%{search}%") if search else ())
+    st.dataframe(df_appt)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("➕ Book Appointment")
+        patients = query("SELECT name FROM Patients")["name"].tolist()
+        doctors = query("SELECT name FROM Doctors")["name"].tolist()
+        pat = st.selectbox("Patient", patients)
+        doc = st.selectbox("Doctor", doctors)
+        app_date = st.date_input("Date")
+        app_time = st.time_input("Time")
+        status = st.selectbox("Status", ["Scheduled", "Completed", "Cancelled"])
+        if st.button("Book Appointment", key="add_appt"):
+            execute("INSERT INTO Appointments VALUES(NULL,?,?,?,?,?)", (pat, doc, str(app_date), str(app_time), status))
+            st.success("✅ Appointment booked")
+            rerun_app()
+
+    with col2:
+        st.subheader("✏️ Update/Delete Appointment")
+        aid = st.number_input("Appointment ID", min_value=1, key="appt_id")
+        appt_row = query("SELECT * FROM Appointments WHERE id=?", (aid,))
+        if not appt_row.empty:
+            pat = st.selectbox("Patient", patients, index=patients.index(appt_row["patient"].iloc[0]))
+            doc = st.selectbox("Doctor", doctors, index=doctors.index(appt_row["doctor"].iloc[0]))
+            app_date = st.date_input("Date", pd.to_datetime(appt_row["date"].iloc[0]))
+            app_time = st.time_input("Time", pd.to_datetime(appt_row["time"].iloc[0]).time())
+            status = st.selectbox("Status", ["Scheduled", "Completed", "Cancelled"], index=["Scheduled","Completed","Cancelled"].index(appt_row["status"].iloc[0]))
+            ucol, dcol = st.columns(2)
+            with ucol:
+                if st.button("Update Appointment", key="upd_appt_btn"):
+                    execute("UPDATE Appointments SET patient=?, doctor=?, date=?, time=?, status=? WHERE id=?",
+                            (pat, doc, str(app_date), str(app_time), status, aid))
+                    st.success("✅ Appointment updated")
+                    rerun_app()
+            with dcol:
+                if st.button("Delete Appointment", key="del_appt_btn"):
+                    execute("DELETE FROM Appointments WHERE id=?", (aid,))
+                    st.success("❌ Appointment deleted")
+                    rerun_app()
+
+    st.subheader("🧾 Export Appointment Slip as PDF")
+    appt_id_pdf = st.number_input("Enter Appointment ID", min_value=1, key="pdf_appt_id")
+    if st.button("Generate PDF", key="pdf_appt_btn"):
+        appt_pdf = query("SELECT * FROM Appointments WHERE id=?", (appt_id_pdf,))
+        if not appt_pdf.empty:
+            buffer = io.BytesIO()
+            doc_pdf = SimpleDocTemplate(buffer, pagesize=letter)
+            styles = getSampleStyleSheet()
+            elements = [Paragraph(f"Appointment Slip for {appt_pdf['patient'].iloc[0]}", styles['Title'])]
+            data = [["Patient","Doctor","Date","Time","Status"],
+                    [appt_pdf['patient'].iloc[0], appt_pdf['doctor'].iloc[0], appt_pdf['date'].iloc[0],
+                     appt_pdf['time'].iloc[0], appt_pdf['status'].iloc[0]]]
+            table = Table(data)
+            table.setStyle([('BACKGROUND', (0,0), (-1,0), colors.grey),
+                            ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke),
+                            ('ALIGN',(0,0),(-1,-1),'CENTER'),
+                            ('GRID',(0,0),(-1,-1),1,colors.black)])
+            elements.append(table)
+            doc_pdf.build(elements)
+            st.download_button("Download PDF", buffer.getvalue(), file_name="appointment.pdf")
+        else:
+            st.error("Appointment not found")
