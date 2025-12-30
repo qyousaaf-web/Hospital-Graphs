@@ -1,2 +1,5 @@
-matplotlib
-seaborn
+streamlit
+pandas
+plotly
+reportlab
+
